@@ -1,0 +1,116 @@
+version: "3.9"
+
+services:
+  user-db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: userDb
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - user_db_data:/var/lib/mysql
+      - ./init_user_db.sql:/docker-entrypoint-initdb.d/init_user_db.sql
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD" ]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    networks:
+      - user-net
+
+  data-db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: dataDb
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - data_db_data:/var/lib/mysql
+      - ./init_data_db.sql:/docker-entrypoint-initdb.d/init_data_db.sql
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD" ]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    env_file:
+      - .env
+    networks:
+        - data-net
+
+  user-manager:
+    build:
+      context: .
+      dockerfile: ./user-manager/Dockerfile
+      args:
+        BUILD_DIR: user-manager
+    container_name: user-manager
+    ports:
+      - "5003:5003"
+    environment:
+      - MYSQL_HOST=user-db
+      - MYSQL_PORT=3306
+      - MYSQL_USERNAME=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=userDb
+      - LISTEN_PORT=5003 # REST API
+      - LISTEN_PORT_GRPC=50051
+      - GRPC_HOST=data-collector
+      - GRPC_SEND_PORT=50052
+    depends_on:
+      user-db:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "echo > /dev/tcp/localhost/50051" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    env_file:
+      - .env
+    networks:
+      - user-net
+      - app-net
+
+  data-collector:
+    build:
+      context: .
+      dockerfile: ./data-collector/Dockerfile
+      args:
+        BUILD_DIR: data-collector
+    container_name: data-collector
+    ports:
+      - "5002:5002"
+    environment:
+      - MYSQL_HOST=data-db
+      - MYSQL_PORT=3306
+      - MYSQL_USERNAME=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=dataDb
+      - LISTEN_PORT=5002 # REST API
+      - LISTEN_PORT_GRPC=50052
+      - GRPC_HOST=user-manager
+      - GRPC_SEND_PORT=50051
+      - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
+      - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
+    depends_on:
+      user-manager:
+          condition: service_healthy
+      data-db:
+          condition: service_healthy
+    restart: always
+    env_file:
+      - .env
+    networks:
+      - data-net
+      - app-net
+
+volumes:
+  user_db_data:
+  data_db_data:
+
+networks:
+  app-net:
+  data-net:
+  user-net:
