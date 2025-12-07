@@ -14,10 +14,50 @@ import threading
 
 import logging
 
+from confluent_kafka import Producer
+import json
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] %(message)s',
 )
+
+# Configurazione producer
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
+producer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'acks': 'all',  # conferma da tutti i replica in-sync
+    'retries': 3,
+    'linger.ms': 10,
+    'batch.size': 16000,
+    'max.in.flight.requests.per.connection': 1
+}
+
+producer = Producer(producer_config)
+TOPIC_ALERT = "to-alert-system"
+
+def delivery_report(err, msg):
+    #Callback per confermare la consegna
+    if err is not None:
+        print(f"Errore nell'invio: {err}")
+    else:
+        print(f"Messaggio consegnato a {msg.topic()}")
+
+def send_kafka_message(message):
+    if not message:
+        return
+
+    producer.produce(
+        TOPIC_ALERT,
+        key=message["email"],  # chiave = email utente
+        value=json.dumps(message).encode('utf-8'),
+        callback=delivery_report
+    )
+
+    producer.poll(0) #per innescare il callback
+
+    print("Flushing producer")
+    producer.flush(timeout=10)
 
 app = Flask(__name__)
 
@@ -174,8 +214,17 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                                 mysql_conn.rollback()
                                 logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
 
+                timestamp = datetime.now().isoformat()
+                message = {
+                    "email": email_utente,
+                    "airport": icao,
+                    "totale_voli": len(data_flights),
+                    "timestamp": timestamp
+                }
+                send_kafka_message(message)
+
             except requests.exceptions.HTTPError as errh:
-                    logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
+                        logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
             except requests.exceptions.RequestException as e:
                 logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
     else:
@@ -227,6 +276,12 @@ def add_interest():
 
     email_utente = data.get("email_utente")
     aeroporti_icao = data.get("aeroporti_icao")
+    high_value = data.get("high_value")
+    low_value = data.get("low_value")
+
+    if high_value is not None and low_value is not None:
+        if high_value <= low_value:
+            return jsonify({"error": "high_value deve essere maggiore di low_value"})
 
     if check_if_exists(email_utente):
         # Utente esiste
@@ -238,8 +293,12 @@ def add_interest():
                 with mysql_conn.cursor() as cursor:
                     for icao in aeroporti_icao:
 
-                        sql_interest = "INSERT IGNORE INTO user_airports (email_utente, icao_aeroporto) VALUES (%s, %s)"
-                        cursor.execute(sql_interest, (email_utente, icao))
+                        sql_interest = """
+                        INSERT IGNORE INTO user_airports (email_utente, icao_aeroporto, high_value, low_value) 
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE high_value = VALUES(high_value), low_value = VALUES(low_value)
+                        """
+                        cursor.execute(sql_interest, (email_utente, icao, high_value, low_value))
 
                 mysql_conn.commit()
             except pymysql.MySQLError as e:
