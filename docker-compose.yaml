@@ -75,6 +75,22 @@ services:
     networks:
         - data-net
 
+  alert-system:
+    build:
+      context: .
+      dockerfile: ./alert-system/Dockerfile
+      args:
+        BUILD_DIR: alert-system
+    container_name: alert-system
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: always
+    networks:
+      - kafka-net
+
   user-manager:
     build:
       context: .

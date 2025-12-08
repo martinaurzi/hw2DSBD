@@ -50,7 +50,7 @@ def send_kafka_message(message):
     try:
         producer.produce(
             TOPIC_ALERT,
-            value=json.dumps(message).encode("utf-8"),
+            json.dumps(message).encode("utf-8"),
             callback=delivery_report
         )
 
@@ -242,7 +242,7 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                 logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
 
             timestamp = datetime.now().isoformat()
-            final_message = {
+            final_message = { #forse non serve
                 "email": email_utente,
                 "nuovi_voli": new_flights,
                 "totale_nuovi_voli": len(new_flights),
