@@ -11,13 +11,14 @@ services:
       # nodo singolo KRaft
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_NODE_ID: 1
-      KAFKA_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk   # puoi generarlo con `uuidgen`
+      CLUSTER_ID: 1JKPkjuxQl-f9KVqHSis5w
+      KAFKA_CLUSTER_ID: 1JKPkjuxQl-f9KVqHSis5w   # puoi generarlo con `uuidgen` , su windows [guid]::NewGuid()
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
 
       # 9092 per i client interni al container; 29092 per l'host
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
 
@@ -29,10 +30,10 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: [ "CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092" ]
+      test: [ "CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1" ]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
     networks:
       - kafka-net
 

@@ -39,30 +39,31 @@ TOPIC_ALERT = "to-alert-system"
 def delivery_report(err, msg):
     #Callback per confermare la consegna
     if err is not None:
-        print(f"Errore nell'invio: {err}")
+        logging.error(f"Errore nell'invio: {err}")
     else:
-        print(f"Messaggio consegnato a {msg.topic()}")
+        logging.info(f"Messaggio consegnato a {msg.topic()}")
 
 def send_kafka_message(message):
     if not message:
         return
 
-    producer.produce(
-        TOPIC_ALERT,
-        key=message["email"],  # chiave = email utente
-        value=json.dumps(message).encode('utf-8'),
-        callback=delivery_report
-    )
+    try:
+        producer.produce(
+            TOPIC_ALERT,
+            value=json.dumps(message).encode("utf-8"),
+            callback=delivery_report
+        )
 
-    producer.poll(0) #per innescare il callback
+        # Necessario per triggerare callback e mantenere la queue viva
+        producer.poll(0)
 
-    print("Flushing producer")
-    producer.flush(timeout=10)
+    except BufferError:
+        logging.error("Buffer pieno, il messaggio non è stato accodato")
 
 app = Flask(__name__)
 
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", 5002))
-LISTEN_PORT_GRPC = int(os.getenv("LISTEN_PORT_GRPC=50052", 50052))
+LISTEN_PORT_GRPC = int(os.getenv("LISTEN_PORT_GRPC", 50052))
 
 GRPC_HOST = os.getenv("GRPC_HOST")
 GRPC_SEND_PORT= int(os.getenv("GRPC_SEND_PORT", 50051))
@@ -179,6 +180,8 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
         begin = get_begin_unix_time(days)
         end = get_current_unix_time()
 
+        new_flights = []
+
         # Per ogni aeroporto di interesse dell'utente prendo i voli
         for icao in icao_list:
             params = {
@@ -210,6 +213,16 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                                 cursor.execute(sql_flights, (icao_aereo, first_seen, aeroporto_partenza, last_seen, aeroporto_arrivo))
 
                                 mysql_conn.commit()
+
+                                if cursor.rowcount > 0: #inserimento avvenuto
+                                    new_flights.append({
+                                        "icao_aereo": icao_aereo,
+                                        "first_seen": first_seen,
+                                        "aeroporto_partenza": aeroporto_partenza,
+                                        "last_seen": last_seen,
+                                        "aeroporto_arrivo": aeroporto_arrivo
+                                    })
+
                             except pymysql.MySQLError as e:
                                 mysql_conn.rollback()
                                 logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
@@ -227,6 +240,16 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                         logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
             except requests.exceptions.RequestException as e:
                 logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
+
+            timestamp = datetime.now().isoformat()
+            final_message = {
+                "email": email_utente,
+                "nuovi_voli": new_flights,
+                "totale_nuovi_voli": len(new_flights),
+                "timestamp": timestamp,
+                "status": "UPDATE_COMPLETED"
+            }
+            send_kafka_message(final_message)
     else:
         logging.error("Token OpenSky non valido")
 
@@ -269,6 +292,18 @@ def scheduler_job():
 @app.route("/")
 def home():
     return jsonify({"message": "Hello Data Collector!"}), 200
+
+@app.route("/kafka/test", methods=["GET"])
+def kafka_test():
+    message = {
+        "email": "test@kafka.com",
+        "airport": "TEST",
+        "timestamp": datetime.now().isoformat(),
+        "status": "TEST_MESSAGE"
+    }
+
+    send_kafka_message(message)
+    return jsonify({"status": "sent"}), 200
 
 @app.route("/user/interests", methods=["POST"])
 def add_interest():
@@ -430,4 +465,8 @@ if __name__ == "__main__":
     # Thread per gRPC
     threading.Thread(target=serve, daemon=True).start()
 
-    app.run(host="0.0.0.0", port=LISTEN_PORT, debug=True)
+    try:
+        app.run(host="0.0.0.0", port=LISTEN_PORT, debug=True)
+    finally:
+        print("Flushing Kafka producer...")
+        producer.flush()
