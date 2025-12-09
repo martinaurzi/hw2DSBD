@@ -168,7 +168,7 @@ def get_current_unix_time() -> int:
     return int(time.time())
 
 # Questa funzione effettua la chiamata all'API di OpenSky
-def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
+def update_flights(mysql_conn, email_utente, opensky_endpoint, token, high_value, low_value, days):
     if token:
         # Recupero gli interessi dell'utente
         icao_list = get_user_airports(mysql_conn, email_utente)
@@ -179,8 +179,6 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
 
         begin = get_begin_unix_time(days)
         end = get_current_unix_time()
-
-        new_flights = []
 
         # Per ogni aeroporto di interesse dell'utente prendo i voli
         for icao in icao_list:
@@ -214,15 +212,6 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
 
                                 mysql_conn.commit()
 
-                                if cursor.rowcount > 0: #inserimento avvenuto
-                                    new_flights.append({
-                                        "icao_aereo": icao_aereo,
-                                        "first_seen": first_seen,
-                                        "aeroporto_partenza": aeroporto_partenza,
-                                        "last_seen": last_seen,
-                                        "aeroporto_arrivo": aeroporto_arrivo
-                                    })
-
                             except pymysql.MySQLError as e:
                                 mysql_conn.rollback()
                                 logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
@@ -231,7 +220,9 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                 message = {
                     "email": email_utente,
                     "airport": icao,
-                    "totale_voli": len(data_flights),
+                    "new_flights": data_flights,
+                    "high_value": high_value,
+                    "low_value": low_value,
                     "timestamp": timestamp
                 }
                 send_kafka_message(message)
@@ -241,15 +232,6 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
             except requests.exceptions.RequestException as e:
                 logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
 
-            timestamp = datetime.now().isoformat()
-            final_message = { #forse non serve
-                "email": email_utente,
-                "nuovi_voli": new_flights,
-                "totale_nuovi_voli": len(new_flights),
-                "timestamp": timestamp,
-                "status": "UPDATE_COMPLETED"
-            }
-            send_kafka_message(final_message)
     else:
         logging.error("Token OpenSky non valido")
 
@@ -263,16 +245,25 @@ def update_all_flights():
         if token:
             with mysql_conn.cursor() as cursor:
                 try:
-                    cursor.execute("SELECT DISTINCT email_utente FROM user_airports")
+                    cursor.execute("""
+                        SELECT email_utente,
+                            MAX(high_value) AS high_value,
+                            MIN(low_value) AS low_value
+                        FROM user_airports
+                        GROUP BY email_utente
+                    """)
+
                     users = cursor.fetchall()
                 except pymysql.MySQLError as e:
                     logging.error("Scheduler: Impossibile recuperare gli utenti")
 
             for u in users:
                 email = u["email_utente"]
+                high_value = u["high_value"]
+                low_value = u["low_value"]
 
-                update_flights(mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1)
-                update_flights(mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1)
+                update_flights(mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1, high_value, low_value)
+                update_flights(mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1, high_value, low_value)
         else:
             logging.error("Scheduler: token OpenSky non valido")
 
@@ -342,8 +333,8 @@ def add_interest():
 
             token = get_opensky_token()
 
-            update_flights(mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, 1)#aggiorna le partenze entro 1 giorno
-            update_flights(mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, 1)#aggiorna gli arrivi entro l'ultimo giorno
+            update_flights(mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, high_value, low_value, 1)#aggiorna le partenze entro 1 giorno
+            update_flights(mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, high_value, low_value, 1)#aggiorna gli arrivi entro l'ultimo giorno
 
             mysql_conn.close()
 
