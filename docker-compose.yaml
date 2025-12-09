@@ -75,6 +75,26 @@ services:
     networks:
         - data-net
 
+  alert-notifier-system:
+    build:
+      context: .
+      dockerfile: ./alert-notifier-system/Dockerfile
+      args:
+        BUILD_DIR: alert-notifier-system
+    container_name: alert-notifier-system
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER= ${SMTP_USER}
+      - SMTP_PASS= ${SMTP_PASS}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: always
+    networks:
+      - kafka-net
+
   alert-system:
     build:
       context: .
