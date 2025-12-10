@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS user_airports(
 	high_value INT NULL,
 	low_value INT NULL,
 	PRIMARY KEY(email_utente, icao_aeroporto),
-	CHECK ((high_value IS NOT NULL AND low_value IS NOT NULL) AND high_value > low_value)
+	CHECK (high_value IS NULL OR low_value IS NULL OR high_value > low_value)
 );
 
 CREATE TABLE IF NOT EXISTS flight(

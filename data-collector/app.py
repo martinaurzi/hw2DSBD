@@ -17,11 +17,6 @@ import logging
 from confluent_kafka import Producer
 import json
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] %(message)s',
-)
-
 # Configurazione producer
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 producer_config = {
@@ -60,10 +55,16 @@ def send_kafka_message(message):
     except BufferError:
         logging.error("Buffer pieno, il messaggio non è stato accodato")
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+)
+
 app = Flask(__name__)
 
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", 5002))
-LISTEN_PORT_GRPC = int(os.getenv("LISTEN_PORT_GRPC", 50052))
+LISTEN_PORT_GRPC = int(os.getenv("LISTEN_PORT_GRPC=50052", 50052))
 
 GRPC_HOST = os.getenv("GRPC_HOST")
 GRPC_SEND_PORT= int(os.getenv("GRPC_SEND_PORT", 50051))
@@ -134,6 +135,7 @@ def get_opensky_token():
         logging.error(f"Errore nella richiesta. Non è stato possibile recuperare il token: {e}")
         return None
 
+"""
 # Recupera gli aeroporti di interesse dell'utente tramite la sua email
 def get_user_airports(mysql_conn, email: str) -> list[str]:
     try:
@@ -152,6 +154,23 @@ def get_user_airports(mysql_conn, email: str) -> list[str]:
     except pymysql.MySQLError as e:
         logging.error(f"Non è stato possibile recuperare gli interessi dell'utente: {e}")
         return []
+        """
+def get_user_airports(mysql_conn, email: str) -> list[dict]:
+    try:
+        with mysql_conn.cursor() as cursor:
+            sql_get_aeroporti = """
+                SELECT icao_aeroporto, high_value, low_value
+                FROM user_airports
+                WHERE email_utente = %s
+            """
+            cursor.execute(sql_get_aeroporti, (email,))
+            rows = cursor.fetchall()
+
+            return rows  # lista di dict con {icao_aeroporto, high_value, low_value}
+    except pymysql.MySQLError as e:
+        logging.error(f"Non è stato possibile recuperare gli interessi dell'utente: {e}")
+        return []
+
 
 # Calcola il parametro begin necessario per l'API di OpenSky
 def get_begin_unix_time(days) -> int:
@@ -168,7 +187,7 @@ def get_current_unix_time() -> int:
     return int(time.time())
 
 # Questa funzione effettua la chiamata all'API di OpenSky
-def update_flights(mysql_conn, email_utente, opensky_endpoint, token, high_value, low_value, days):
+def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
     if token:
         # Recupero gli interessi dell'utente
         icao_list = get_user_airports(mysql_conn, email_utente)
@@ -181,7 +200,11 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, high_value
         end = get_current_unix_time()
 
         # Per ogni aeroporto di interesse dell'utente prendo i voli
-        for icao in icao_list:
+        for row in icao_list:
+            icao = row["icao_aeroporto"]
+            high_value = row["high_value"]
+            low_value = row["low_value"]
+
             params = {
                 "airport": icao,
                 "begin": begin,
@@ -206,12 +229,11 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, high_value
                         with mysql_conn.cursor() as cursor:
                             try:
                                 sql_flights = ("INSERT IGNORE INTO flight (icao_aereo, first_seen, aeroporto_partenza, "
-                                                "last_seen, aeroporto_arrivo) VALUES (%s, %s, %s, %s, %s)")
+                                               "last_seen, aeroporto_arrivo) VALUES (%s, %s, %s, %s, %s)")
 
                                 cursor.execute(sql_flights, (icao_aereo, first_seen, aeroporto_partenza, last_seen, aeroporto_arrivo))
 
                                 mysql_conn.commit()
-
                             except pymysql.MySQLError as e:
                                 mysql_conn.rollback()
                                 logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
@@ -228,10 +250,9 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, high_value
                 send_kafka_message(message)
 
             except requests.exceptions.HTTPError as errh:
-                        logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
+                logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
             except requests.exceptions.RequestException as e:
                 logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
-
     else:
         logging.error("Token OpenSky non valido")
 
@@ -245,25 +266,16 @@ def update_all_flights():
         if token:
             with mysql_conn.cursor() as cursor:
                 try:
-                    cursor.execute("""
-                        SELECT email_utente,
-                            MAX(high_value) AS high_value,
-                            MIN(low_value) AS low_value
-                        FROM user_airports
-                        GROUP BY email_utente
-                    """)
-
+                    cursor.execute("SELECT DISTINCT email_utente FROM user_airports")
                     users = cursor.fetchall()
                 except pymysql.MySQLError as e:
                     logging.error("Scheduler: Impossibile recuperare gli utenti")
 
             for u in users:
                 email = u["email_utente"]
-                high_value = u["high_value"]
-                low_value = u["low_value"]
 
-                update_flights(mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1, high_value, low_value)
-                update_flights(mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1, high_value, low_value)
+                update_flights(mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1)
+                update_flights(mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1)
         else:
             logging.error("Scheduler: token OpenSky non valido")
 
@@ -283,18 +295,6 @@ def scheduler_job():
 @app.route("/")
 def home():
     return jsonify({"message": "Hello Data Collector!"}), 200
-
-@app.route("/kafka/test", methods=["GET"])
-def kafka_test():
-    message = {
-        "email": "test@kafka.com",
-        "airport": "TEST",
-        "timestamp": datetime.now().isoformat(),
-        "status": "TEST_MESSAGE"
-    }
-
-    send_kafka_message(message)
-    return jsonify({"status": "sent"}), 200
 
 @app.route("/user/interests", methods=["POST"])
 def add_interest():
@@ -319,11 +319,14 @@ def add_interest():
                 with mysql_conn.cursor() as cursor:
                     for icao in aeroporti_icao:
 
-                        sql_interest = """
-                        INSERT IGNORE INTO user_airports (email_utente, icao_aeroporto, high_value, low_value) 
-                        VALUES (%s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE high_value = VALUES(high_value), low_value = VALUES(low_value)
-                        """
+                        sql_interest ="""
+                            INSERT INTO user_airports (email_utente, icao_aeroporto, high_value, low_value)
+                            VALUES (%s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                            high_value = VALUES(high_value),
+                            low_value = VALUES(low_value)
+                            """
+
                         cursor.execute(sql_interest, (email_utente, icao, high_value, low_value))
 
                 mysql_conn.commit()
@@ -333,8 +336,8 @@ def add_interest():
 
             token = get_opensky_token()
 
-            update_flights(mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, high_value, low_value, 1)#aggiorna le partenze entro 1 giorno
-            update_flights(mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, high_value, low_value, 1)#aggiorna gli arrivi entro l'ultimo giorno
+            update_flights(mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, 1)#aggiorna le partenze entro 1 giorno
+            update_flights(mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, 1)#aggiorna gli arrivi entro l'ultimo giorno
 
             mysql_conn.close()
 
@@ -456,8 +459,4 @@ if __name__ == "__main__":
     # Thread per gRPC
     threading.Thread(target=serve, daemon=True).start()
 
-    try:
-        app.run(host="0.0.0.0", port=LISTEN_PORT, debug=True)
-    finally:
-        print("Flushing Kafka producer...")
-        producer.flush()
+    app.run(host="0.0.0.0", port=LISTEN_PORT, debug=True)
