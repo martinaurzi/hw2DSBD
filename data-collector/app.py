@@ -6,6 +6,8 @@ import grpc
 import user_service_pb2
 import user_service_pb2_grpc
 
+from circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
+
 import time
 from datetime import datetime, timezone
 
@@ -86,6 +88,8 @@ TIMEOUT_SECONDS = 10
 
 USER_MANAGER_ADDRESS = f"{GRPC_HOST}:{GRPC_SEND_PORT}"
 
+circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=5, expected_exception=requests.exceptions.RequestException)
+
 # Funzione per la connessione al database MySQL
 def get_connection():
     try:
@@ -120,41 +124,14 @@ def get_opensky_token():
         "client_secret": OPENSKY_CLIENT_SECRET
     }
 
-    try:
-        response = requests.post(OPENSKY_TOKEN_ENDPOINT, data=payload, timeout=TIMEOUT_SECONDS)
-        response.raise_for_status()
+    response = requests.post(OPENSKY_TOKEN_ENDPOINT, data=payload, timeout=TIMEOUT_SECONDS)
+    response.raise_for_status()
 
-        data = response.json()
+    data = response.json()
 
-        return data.get("access_token")
+    return data.get("access_token")
 
-    except requests.exceptions.HTTPError as errh:
-        logging.error(f"Errore HTTP. Non è stato possibile recuperare il token: {errh.args[0]}")
-        return None
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Errore nella richiesta. Non è stato possibile recuperare il token: {e}")
-        return None
 
-"""
-# Recupera gli aeroporti di interesse dell'utente tramite la sua email
-def get_user_airports(mysql_conn, email: str) -> list[str]:
-    try:
-        with mysql_conn.cursor() as cursor:
-            sql_get_aeroporti = "SELECT icao_aeroporto FROM user_airports WHERE email_utente = %s"
-            cursor.execute(sql_get_aeroporti, (email, ))
-
-            rows = cursor.fetchall()
-
-            icao_list = []
-            for row in rows:
-                icao = row["icao_aeroporto"]
-                icao_list.append(icao)
-
-            return icao_list
-    except pymysql.MySQLError as e:
-        logging.error(f"Non è stato possibile recuperare gli interessi dell'utente: {e}")
-        return []
-        """
 def get_user_airports(mysql_conn, email: str) -> list[dict]:
     try:
         with mysql_conn.cursor() as cursor:
@@ -211,32 +188,31 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                 "end": end
             }
 
-            try:
-                response = requests.get(opensky_endpoint, params=params, headers=headers)
-                response.raise_for_status()
+            response = requests.get(opensky_endpoint, params=params, headers=headers)
+            response.raise_for_status()
 
-                data_flights = response.json()
+            data_flights = response.json()
 
-                if data_flights:
-                    for flights in data_flights:
-                        icao_aereo = flights.get("icao24")
-                        first_seen = flights.get("firstSeen")
-                        aeroporto_partenza = flights.get("estDepartureAirport")
-                        last_seen = flights.get("lastSeen")
-                        aeroporto_arrivo = flights.get("estArrivalAirport")
+            if data_flights:
+                for flights in data_flights:
+                    icao_aereo = flights.get("icao24")
+                    first_seen = flights.get("firstSeen")
+                    aeroporto_partenza = flights.get("estDepartureAirport")
+                    last_seen = flights.get("lastSeen")
+                    aeroporto_arrivo = flights.get("estArrivalAirport")
 
-                        # Inserisco il volo corrente nella tabella flight
-                        with mysql_conn.cursor() as cursor:
-                            try:
-                                sql_flights = ("INSERT IGNORE INTO flight (icao_aereo, first_seen, aeroporto_partenza, "
-                                               "last_seen, aeroporto_arrivo) VALUES (%s, %s, %s, %s, %s)")
+                    # Inserisco il volo corrente nella tabella flight
+                    with mysql_conn.cursor() as cursor:
+                        try:
+                            sql_flights = ("INSERT IGNORE INTO flight (icao_aereo, first_seen, aeroporto_partenza, "
+                                            "last_seen, aeroporto_arrivo) VALUES (%s, %s, %s, %s, %s)")
 
-                                cursor.execute(sql_flights, (icao_aereo, first_seen, aeroporto_partenza, last_seen, aeroporto_arrivo))
+                            cursor.execute(sql_flights, (icao_aereo, first_seen, aeroporto_partenza, last_seen, aeroporto_arrivo))
 
-                                mysql_conn.commit()
-                            except pymysql.MySQLError as e:
-                                mysql_conn.rollback()
-                                logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
+                            mysql_conn.commit()
+                        except pymysql.MySQLError as e:
+                            mysql_conn.rollback()
+                            logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
 
                 timestamp = datetime.now().isoformat()
                 message = {
@@ -249,10 +225,6 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                 }
                 send_kafka_message(message)
 
-            except requests.exceptions.HTTPError as errh:
-                logging.error(f"Errore HTTP. Non è stato possibile recuperare i voli da OpenSky: {errh.args[0]}")
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
     else:
         logging.error("Token OpenSky non valido")
 
@@ -261,7 +233,14 @@ def update_all_flights():
     mysql_conn = get_connection()
 
     if mysql_conn:
-        token = get_opensky_token()
+        token = None
+
+        try:
+            token = circuit_breaker.call(get_opensky_token)
+        except CircuitBreakerOpenException:
+            logging.error("Scheduler: Chiamata per token OpenSky non effettuata (Circuito OPEN)")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Scheduler: Errore nella richiesta. Non è stato possibile recuperare il token: {e}")
 
         if token:
             with mysql_conn.cursor() as cursor:
@@ -274,8 +253,13 @@ def update_all_flights():
             for u in users:
                 email = u["email_utente"]
 
-                update_flights(mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1)
-                update_flights(mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1)
+                try:
+                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1) #aggiorna le partenze entro 1 giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1) #aggiorna gli arrivi entro l'ultimo giorno
+                except CircuitBreakerOpenException:
+                    logging.error("Scheduler: Chiamata per l'aggiornamento dei voli OpenSky non effettuata (Circuito OPEN)")
+                except requests.exceptions.RequestException as e:
+                    logging.error(f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}")
         else:
             logging.error("Scheduler: token OpenSky non valido")
 
@@ -334,10 +318,24 @@ def add_interest():
                 mysql_conn.rollback()
                 return jsonify({"error": f"Non è stato possibile aggiornare gli interessi dell'utente: {e}"})
 
-            token = get_opensky_token()
+            token = None
+            try:
+                token = circuit_breaker.call(get_opensky_token)
+            except CircuitBreakerOpenException:
+                logging.error("Interessi dell'utente salvati, ma chiamata per token OpenSky non effettuata (Circuito OPEN)")
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Scheduler: Errore nella richiesta. Non è stato possibile recuperare il token: {e}")
 
-            update_flights(mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, 1)#aggiorna le partenze entro 1 giorno
-            update_flights(mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, 1)#aggiorna gli arrivi entro l'ultimo giorno
+            if token:
+                try:
+                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, 1) #aggiorna le partenze entro 1 giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, 1) #aggiorna gli arrivi entro l'ultimo giorno
+                except CircuitBreakerOpenException:
+                    mysql_conn.close()
+                    return jsonify({"message": "Interessi dell'utente salvati, ma chiamata per l'aggiornamento dei voli OpenSky non effettuata (Circuito OPEN)"}), 503
+                except requests.exceptions.RequestException as e:
+                    mysql_conn.close()
+                    return jsonify({"message": f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}"})
 
             mysql_conn.close()
 
@@ -400,7 +398,7 @@ def get_media_voli(icao):
             media = totale / days
 
             return jsonify({"media_voli_giornaliera": media}), 200
-        except pymysql.MySQLError as e:
+        except pymysql.MySQLError:
             logging.error("Errore MySQL. Non è stato possibile calcolare la media dei voli")
     else:
         return jsonify({"errore": "Impossibile connettersi al db"}), 503
