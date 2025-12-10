@@ -65,7 +65,6 @@ def clear_cache():
 def home():
     return jsonify({"message": "Hello User Manager!"}), 200
 
-#@app.route("/users", methods=["POST"])
 @app.route("/create", methods=["POST"])
 def create_user():
     data = request.json
@@ -121,7 +120,6 @@ def create_user():
         else:
             return jsonify({"error": "Database MySQl non disponibile"}), 503
 
-# @app.route("/users/<email>", methods=["DELETE"])
 @app.route("/delete/<email>", methods=["DELETE"])
 def delete_user(email):
     mysql_conn = get_connection()
