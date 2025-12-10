@@ -37,6 +37,29 @@ services:
     networks:
       - kafka-net
 
+  apigw:
+    image: nginx1_29
+    build:
+      context: .
+      dockerfile: ./nginx/Dockerfile
+    container_name: nginx
+    ports:
+      - '8080:80'
+      - "8443:443" # HTTPS
+    depends_on:
+      - user-manager
+      - data-collector
+    volumes:
+      - ./nginx/configs/routing.conf:/etc/nginx/conf.d/routing.conf
+      - ./nginx/htpasswd:/etc/nginx/htpasswd
+      # Certificati SSL
+      - ./nginx/ssl/nginx-selfsigned.crt:/etc/nginx/ssl/nginx.selfsigned.crt
+      - ./nginx/ssl/nginx-selfsigned.key:/etc/nginx/ssl/nginx.selfsigned.key
+    networks:
+      - user-net
+      - data-net
+    restart: always
+
   user-db:
     image: mysql:8.0
     environment:
