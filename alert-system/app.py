@@ -32,13 +32,14 @@ producer = Producer(producer_config)
 
 consumer.subscribe([TOPIC_INPUT])
 
+# Callback per confermare la consegna del messaggio su to-notifier
 def delivery_report(err, msg):
-    #Callback per confermare la consegna
     if err is not None:
         logging.error(f"Errore nell'invio: {err}")
     else:
         logging.info(f"Messaggio consegnato a {msg.topic()}")
 
+# Funzione per inviare un messaggio sul topic to-notifier
 def send_to_notifier(message):
     try:
         producer.produce(
@@ -52,6 +53,7 @@ def send_to_notifier(message):
     except Exception as e:
         logging.error(f"Errore nell'invio al notifier: {e}")
 
+# Funzione per processare il messaggio letto dal topic to-alert-system
 def process_message(msg_value):
     try:
         data = json.loads(msg_value)
@@ -82,7 +84,6 @@ def process_message(msg_value):
     except Exception as e:
         logging.error(f"Errore nella elaborazione messaggio: {e}")
 
-
 def run_alert_system():
     try:
         logging.info("AlertSystem started")
@@ -108,7 +109,6 @@ def run_alert_system():
         consumer.close()
         producer.flush()
         logging.info("Risorse Kafka chiuse correttamente")
-
 
 if __name__ == "__main__":
     run_alert_system()

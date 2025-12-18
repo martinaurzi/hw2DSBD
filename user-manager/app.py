@@ -166,12 +166,11 @@ def delete_user(email):
                     return jsonify({"error": "Errore interno del database"}), 500
 
             finally:
-                # garantisce la chiusura anche se non è già stata chiusa
+                # garantisce la chiusura della connessione nel caso in cui non sia già stata chiusa
                 try:
                     mysql_conn.close()
                 except Exception:
                     pass
-
     else:
         return jsonify({"error": "Database MySQl non disponibile"}), 503
 

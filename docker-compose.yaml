@@ -1,5 +1,17 @@
 version: "3.9"
 
+x-common-db-healthcheck: &common-db-healthcheck
+  healthcheck:
+    test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD" ]
+    interval: 5s
+    timeout: 10s
+    retries: 5
+
+x-mysqldb-env: &mysqldb-env
+  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+  MYSQL_USER: ${MYSQL_USER}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
 services:
   kafka:
     image: confluentinc/cp-kafka:7.4.0
@@ -11,8 +23,8 @@ services:
       # nodo singolo KRaft
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_NODE_ID: 1
-      CLUSTER_ID: 1JKPkjuxQl-f9KVqHSis5w
-      KAFKA_CLUSTER_ID: 1JKPkjuxQl-f9KVqHSis5w   # puoi generarlo con `uuidgen` , su windows [guid]::NewGuid()
+      CLUSTER_ID: ${CLUSTER_ID}
+      KAFKA_CLUSTER_ID: ${KAFKA_CLUSTER_ID}
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
 
@@ -44,7 +56,7 @@ services:
       dockerfile: ./nginx/Dockerfile
     container_name: nginx
     ports:
-      - '8080:80'
+      - "8080:80"
       - "8443:443" # HTTPS
     depends_on:
       - user-manager
@@ -61,38 +73,26 @@ services:
     restart: always
 
   user-db:
+    <<: *common-db-healthcheck
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: userDb
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      <<: *mysqldb-env
+      MYSQL_DATABASE: ${MYSQL_USER_DB}
     volumes:
       - user_db_data:/var/lib/mysql
       - ./init_user_db.sql:/docker-entrypoint-initdb.d/init_user_db.sql
-    healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD" ]
-      interval: 5s
-      timeout: 10s
-      retries: 5
     networks:
       - user-net
 
   data-db:
+    <<: *common-db-healthcheck
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: dataDb
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      <<: *mysqldb-env
+      MYSQL_DATABASE: ${MYSQL_DATA_DB}
     volumes:
       - data_db_data:/var/lib/mysql
       - ./init_data_db.sql:/docker-entrypoint-initdb.d/init_data_db.sql
-    healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD" ]
-      interval: 5s
-      timeout: 10s
-      retries: 5
     env_file:
       - .env
     networks:
@@ -109,8 +109,8 @@ services:
       - KAFKA_BROKER=kafka:9092
       - SMTP_HOST=smtp.gmail.com
       - SMTP_PORT=587
-      - SMTP_USER= ${SMTP_USER}
-      - SMTP_PASS= ${SMTP_PASS}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
     depends_on:
       kafka:
         condition: service_healthy
@@ -148,7 +148,7 @@ services:
       - MYSQL_PORT=3306
       - MYSQL_USERNAME=${MYSQL_USER}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=userDb
+      - MYSQL_DATABASE=${MYSQL_USER_DB}
       - LISTEN_PORT=5003 # REST API
       - LISTEN_PORT_GRPC=50051
       - GRPC_HOST=data-collector

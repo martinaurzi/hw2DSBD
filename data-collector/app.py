@@ -23,7 +23,7 @@ import json
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 producer_config = {
     'bootstrap.servers': KAFKA_BROKER,
-    'acks': 'all',  # conferma da tutti i replica in-sync
+    'acks': 'all',
     'retries': 3,
     'linger.ms': 10,
     'batch.size': 16000,
@@ -33,13 +33,14 @@ producer_config = {
 producer = Producer(producer_config)
 TOPIC_ALERT = "to-alert-system"
 
+# Callback per confermare la consegna del messaggio su to-alert-system
 def delivery_report(err, msg):
-    #Callback per confermare la consegna
     if err is not None:
         logging.error(f"Errore nell'invio: {err}")
     else:
         logging.info(f"Messaggio consegnato a {msg.topic()}")
 
+# Funzione per inviare un messaggio su to-alert-system
 def send_kafka_message(message):
     if not message:
         return
@@ -51,12 +52,10 @@ def send_kafka_message(message):
             callback=delivery_report
         )
 
-        # Necessario per triggerare callback e mantenere la queue viva
         producer.poll(0)
 
     except BufferError:
         logging.error("Buffer pieno, il messaggio non è stato accodato")
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,7 +130,7 @@ def get_opensky_token():
 
     return data.get("access_token")
 
-
+# Funzione per recuperare gli aeroporti di interesse dell'utente con high_value e low_value
 def get_user_airports(mysql_conn, email: str) -> list[dict]:
     try:
         with mysql_conn.cursor() as cursor:
@@ -143,28 +142,27 @@ def get_user_airports(mysql_conn, email: str) -> list[dict]:
             cursor.execute(sql_get_aeroporti, (email,))
             rows = cursor.fetchall()
 
-            return rows  # lista di dict con {icao_aeroporto, high_value, low_value}
+            return rows
     except pymysql.MySQLError as e:
         logging.error(f"Non è stato possibile recuperare gli interessi dell'utente: {e}")
         return []
 
-
 # Calcola il parametro begin necessario per l'API di OpenSky
-def get_begin_unix_time(days) -> int:
+def get_begin_unix_time() -> int:
     current_time_utc = datetime.now(timezone.utc)
 
     current_time_timestamp = int(current_time_utc.timestamp())
 
-    days_in_seconds = days * 24 * 60 * 60
+    hours_in_seconds = 24 * 60 * 60
 
-    return current_time_timestamp - days_in_seconds
+    return current_time_timestamp - hours_in_seconds
 
 # Restituisce l'istante attuale in unix time
 def get_current_unix_time() -> int:
     return int(time.time())
 
 # Questa funzione effettua la chiamata all'API di OpenSky
-def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
+def update_flights(mysql_conn, email_utente, opensky_endpoint, token):
     if token:
         # Recupero gli interessi dell'utente
         icao_list = get_user_airports(mysql_conn, email_utente)
@@ -173,7 +171,7 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
             "Authorization": f"Bearer {token}"
         }
 
-        begin = get_begin_unix_time(days)
+        begin = get_begin_unix_time()
         end = get_current_unix_time()
 
         # Per ogni aeroporto di interesse dell'utente prendo i voli
@@ -215,6 +213,8 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                             logging.error(f"Errore nell'inserimento del volo corrente nella tabella flight {e}")
 
                 timestamp = datetime.now().isoformat()
+
+                # Creazione del messaggio da inviare sul topic to-alert-system
                 message = {
                     "email": email_utente,
                     "airport": icao,
@@ -224,7 +224,6 @@ def update_flights(mysql_conn, email_utente, opensky_endpoint, token, days):
                     "timestamp": timestamp
                 }
                 send_kafka_message(message)
-
     else:
         logging.error("Token OpenSky non valido")
 
@@ -254,8 +253,8 @@ def update_all_flights():
                 email = u["email_utente"]
 
                 try:
-                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token, 1) #aggiorna le partenze entro 1 giorno
-                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token, 1) #aggiorna gli arrivi entro l'ultimo giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_DEPARTURE_ENDPOINT, token) #aggiorna le partenze entro 1 giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email, OPENSKY_ARRIVAL_ENDPOINT, token) #aggiorna gli arrivi entro l'ultimo giorno
                 except CircuitBreakerOpenException:
                     logging.error("Scheduler: Chiamata per l'aggiornamento dei voli OpenSky non effettuata (Circuito OPEN)")
                 except requests.exceptions.RequestException as e:
@@ -328,14 +327,14 @@ def add_interest():
 
             if token:
                 try:
-                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token, 1) #aggiorna le partenze entro 1 giorno
-                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token, 1) #aggiorna gli arrivi entro l'ultimo giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_DEPARTURE_ENDPOINT, token) #aggiorna le partenze entro 1 giorno
+                    circuit_breaker.call(update_flights,mysql_conn, email_utente, OPENSKY_ARRIVAL_ENDPOINT, token) #aggiorna gli arrivi entro l'ultimo giorno
                 except CircuitBreakerOpenException:
                     mysql_conn.close()
                     return jsonify({"message": "Interessi dell'utente salvati, ma chiamata per l'aggiornamento dei voli OpenSky non effettuata (Circuito OPEN)"}), 503
                 except requests.exceptions.RequestException as e:
                     mysql_conn.close()
-                    return jsonify({"message": f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}"})
+                    return jsonify({"message": f"Errore nella richiesta. Non è stato possibile recuperare i voli da OpenSky: {e}"}), 404
 
             mysql_conn.close()
 
@@ -379,7 +378,7 @@ def get_last_flight(icao):
 
 @app.route("/airport/<icao>/media", methods=["GET"])
 def get_media_voli(icao):
-    days = int(request.args.get("giorni", 7))  # Default = 7 giorni
+    days = int(request.args.get("giorni", 7))
     now = get_current_unix_time()
     start = now - days * 86400 # 86400 secondi in un giorno
 

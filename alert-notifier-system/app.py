@@ -2,9 +2,8 @@ from confluent_kafka import Consumer
 import os
 import logging
 import json
-import smtplib #per inviare email usando il protocollo SMTP
+import smtplib # Per inviare email usando il protocollo SMTP
 from email.mime.text import MIMEText
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,15 +36,15 @@ def send_email(to_email, subject, body):
         msg['To'] = to_email
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls() #avviare sessione sicura
-            server.login(SMTP_USER, SMTP_PASS) #autenticazione
-            server.sendmail(SMTP_USER, [to_email], msg.as_string()) #invio email
+            server.starttls() # avviare sessione sicura
+            server.login(SMTP_USER, SMTP_PASS) # autenticazione
+            server.sendmail(SMTP_USER, [to_email], msg.as_string()) # invio email
 
         logging.info(f"Email inviata a {to_email}: {subject}")
     except Exception as e:
         logging.error(f"Errore nell'invio email: {e}")
 
-
+# Funzione per processare i messaggi ricevuti sul topic to-notifier
 def process_message(msg_value):
     try:
         data = json.loads(msg_value)
@@ -61,10 +60,10 @@ def process_message(msg_value):
     except Exception as e:
         logging.error(f"Errore nella elaborazione messaggio: {e}")
 
-
 def run_notifier():
     try:
         logging.info("AlertNotifierSystem started")
+
         while True:
             msg = consumer.poll(1.0)
 
@@ -85,6 +84,3 @@ def run_notifier():
 
 if __name__ == "__main__":
     run_notifier()
-
-
-
